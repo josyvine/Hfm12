@@ -8,18 +8,16 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
 import android.widget.ImageButton;
-import android.widget.ImageView;
-import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.ObjectInputStream;
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -27,22 +25,29 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class FolderListActivity extends Activity {
+/**
+ * Updated FolderListActivity (Enhancement 1).
+ * Uses RecyclerView and expandable headers instead of ListView.
+ */
+public class FolderListActivity extends Activity implements FolderListExpandableAdapter.OnHeaderClickListener, FolderListExpandableAdapter.OnItemClickListener {
 
     public static final String EXTRA_FOLDER_NAME = "folder_name";
     public static final String EXTRA_FILE_LIST = "file_list";
-    // --- CRASH FIX: New extra to receive the temporary file name ---
     public static final String EXTRA_TEMP_FILE_NAME = "temp_file_name";
     private static final int FILE_DELETE_REQUEST_CODE = 123;
 
     private TextView titleTextView;
     private ImageButton backButton;
-    private ListView folderListView;
+    private RecyclerView folderRecyclerView; // Changed from ListView
     private TextView emptyView;
 
     private String categoryName;
     private Map<String, List<File>> folderMap;
-    private List<FolderItem> folderItems;
+    
+    // NEW: Lists for RecyclerView Adapter logic
+    private List<Object> masterList = new ArrayList<>();
+    private List<Object> displayList = new ArrayList<>();
+    private FolderListExpandableAdapter adapter;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -54,7 +59,6 @@ public class FolderListActivity extends Activity {
 
         Intent intent = getIntent();
         categoryName = intent.getStringExtra(DashboardActivity.EXTRA_CATEGORY_NAME);
-        // --- CRASH FIX: Get the temp file name instead of the huge serializable object ---
         String tempFileName = intent.getStringExtra(EXTRA_TEMP_FILE_NAME);
 
         if (categoryName == null || tempFileName == null) {
@@ -63,7 +67,6 @@ public class FolderListActivity extends Activity {
             return;
         }
 
-        // --- CRASH FIX: Load the data from the cache file ---
         folderMap = loadFolderMapFromCache(this, tempFileName);
 
         if (folderMap == null) {
@@ -74,16 +77,12 @@ public class FolderListActivity extends Activity {
 
         titleTextView.setText(categoryName);
         setupListeners();
+        
+        // NEW: Populate RecyclerView instead of ListView
+        setupRecyclerView();
         populateFolderList();
     }
 
-    /**
-     * CRASH FIX: This new method loads the folder map from a temporary file in the cache,
-     * then deletes the file.
-     * @param context The application context.
-     * @param tempFileName The name of the temporary file to read.
-     * @return The loaded map, or null on failure.
-     */
     private Map<String, List<File>> loadFolderMapFromCache(Context context, String tempFileName) {
         File tempFile = new File(context.getCacheDir(), tempFileName);
         if (!tempFile.exists()) {
@@ -99,7 +98,6 @@ public class FolderListActivity extends Activity {
         } catch (Exception e) {
             Log.e("FolderListActivity", "Failed to load folder map from cache", e);
         } finally {
-            // Ensure the temporary file is deleted after being read or if an error occurs
             tempFile.delete();
         }
         return loadedMap;
@@ -108,30 +106,57 @@ public class FolderListActivity extends Activity {
     private void initializeViews() {
         titleTextView = findViewById(R.id.title_folder_list);
         backButton = findViewById(R.id.back_button_folder_list);
-        folderListView = findViewById(R.id.folder_list_view);
+        // Using RecyclerView id as defined in the updated XML
+        folderRecyclerView = findViewById(R.id.folder_list_view);
         emptyView = findViewById(R.id.empty_view_folder_list);
+    }
+
+    private void setupRecyclerView() {
+        folderRecyclerView.setLayoutManager(new LinearLayoutManager(this));
+        adapter = new FolderListExpandableAdapter(this, displayList, this, this);
+        folderRecyclerView.setAdapter(adapter);
     }
 
     private void setupListeners() {
         backButton.setOnClickListener(new View.OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					finish();
-				}
-			});
+            @Override
+            public void onClick(View v) {
+                finish();
+            }
+        });
+        
+        // Item click listener is now handled via the Adapter interface methods below
+    }
 
-        folderListView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-				@Override
-				public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-					FolderItem selectedFolder = folderItems.get(position);
-					ArrayList<File> files = new ArrayList<>(selectedFolder.getFiles());
+    // Handled by Adapter Interface
+    @Override
+    public void onItemClick(File file) {
+        // Logic to delete single file context from this list is tricky because we usually delete via folder context in previous app logic.
+        // Replicating original behavior: Open FileDeleteActivity for the folder containing this file.
+        // We find the parent folder name from our map.
+        
+        String parentFolder = "Unknown";
+        List<File> siblings = new ArrayList<>();
+        
+        for (Map.Entry<String, List<File>> entry : folderMap.entrySet()) {
+            if (entry.getValue().contains(file)) {
+                parentFolder = entry.getKey();
+                siblings = entry.getValue();
+                break;
+            }
+        }
+        
+        Intent intent = new Intent(FolderListActivity.this, FileDeleteActivity.class);
+        intent.putExtra(EXTRA_FOLDER_NAME, parentFolder);
+        intent.putExtra(EXTRA_FILE_LIST, (ArrayList<File>) siblings);
+        startActivityForResult(intent, FILE_DELETE_REQUEST_CODE);
+    }
 
-					Intent intent = new Intent(FolderListActivity.this, FileDeleteActivity.class);
-					intent.putExtra(EXTRA_FOLDER_NAME, selectedFolder.getName());
-					intent.putExtra(EXTRA_FILE_LIST, files);
-					startActivityForResult(intent, FILE_DELETE_REQUEST_CODE);
-				}
-			});
+    // Handled by Adapter Interface (Enhancement 1)
+    @Override
+    public void onHeaderClick(FolderHeader header) {
+        header.setExpanded(!header.isExpanded());
+        rebuildDisplayList();
     }
 
     @Override
@@ -145,74 +170,63 @@ public class FolderListActivity extends Activity {
     }
 
     private void populateFolderList() {
-        folderItems = new ArrayList<>();
-        for (Map.Entry<String, List<File>> entry : folderMap.entrySet()) {
-            folderItems.add(new FolderItem(entry.getKey(), entry.getValue()));
+        masterList.clear();
+        
+        List<String> folderNames = new ArrayList<>(folderMap.keySet());
+        Collections.sort(folderNames, String.CASE_INSENSITIVE_ORDER);
+
+        for (String name : folderNames) {
+            List<File> files = folderMap.get(name);
+            if (files != null && !files.isEmpty()) {
+                masterList.add(new FolderHeader(name, files.size()));
+                masterList.addAll(files);
+            }
         }
 
-        Collections.sort(folderItems, new Comparator<FolderItem>() {
-				@Override
-				public int compare(FolderItem o1, FolderItem o2) {
-					return o1.getName().compareToIgnoreCase(o2.getName());
-				}
-			});
-
-        if (folderItems.isEmpty()) {
-            folderListView.setVisibility(View.GONE);
+        if (masterList.isEmpty()) {
+            folderRecyclerView.setVisibility(View.GONE);
             emptyView.setVisibility(View.VISIBLE);
         } else {
-            folderListView.setVisibility(View.VISIBLE);
+            folderRecyclerView.setVisibility(View.VISIBLE);
             emptyView.setVisibility(View.GONE);
-            FolderAdapter adapter = new FolderAdapter(this, folderItems);
-            folderListView.setAdapter(adapter);
+            rebuildDisplayList();
         }
     }
+    
+    // Core logic for Expand/Collapse (Enhancement 1)
+    private void rebuildDisplayList() {
+        displayList.clear();
+        boolean isCurrentGroupExpanded = true;
 
-    private static class FolderItem {
-        private String name;
-        private List<File> files;
-
-        FolderItem(String name, List<File> files) {
-            this.name = name;
-            this.files = files;
+        for (Object item : masterList) {
+            if (item instanceof FolderHeader) {
+                FolderHeader header = (FolderHeader) item;
+                displayList.add(header);
+                isCurrentGroupExpanded = header.isExpanded();
+            } else {
+                if (isCurrentGroupExpanded) {
+                    displayList.add(item);
+                }
+            }
         }
-
-        public String getName() {
-            return name;
-        }
-
-        public List<File> getFiles() {
-            return files;
-        }
-
-        public int getFileCount() {
-            return files != null ? files.size() : 0;
-        }
+        adapter.updateData(displayList);
     }
 
-    private class FolderAdapter extends ArrayAdapter<FolderItem> {
-        public FolderAdapter(Context context, List<FolderItem> folders) {
-            super(context, 0, folders);
+    // Data class for Headers
+    public static class FolderHeader {
+        private String folderName;
+        private int fileCount;
+        private boolean isExpanded;
+
+        public FolderHeader(String folderName, int fileCount) {
+            this.folderName = folderName;
+            this.fileCount = fileCount;
+            this.isExpanded = true; // Default expanded
         }
 
-        @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            FolderItem folderItem = getItem(position);
-
-            if (convertView == null) {
-                convertView = LayoutInflater.from(getContext()).inflate(R.layout.list_item_folder, parent, false);
-            }
-
-            TextView folderName = convertView.findViewById(R.id.folder_name);
-            TextView fileCount = convertView.findViewById(R.id.folder_file_count);
-
-            if (folderItem != null) {
-                folderName.setText(folderItem.getName());
-                fileCount.setText("(" + folderItem.getFileCount() + " files)");
-            }
-
-            return convertView;
-        }
+        public String getFolderName() { return folderName; }
+        public int getFileCount() { return fileCount; }
+        public boolean isExpanded() { return isExpanded; }
+        public void setExpanded(boolean expanded) { isExpanded = expanded; }
     }
 }
-
