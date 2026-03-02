@@ -16,6 +16,7 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.List;
 
 // --- UPDATE 1: Add necessary imports for Manifest and ContextCompat ---
 import android.Manifest;
@@ -51,6 +52,9 @@ public class DeleteService extends IntentService {
         }
 
         ArrayList<String> filePathsToDelete = intent.getStringArrayListExtra(EXTRA_FILES_TO_DELETE);
+        // NEW: Retrieve batch size, default to 1 (single delete) if not provided
+        int batchSize = intent.getIntExtra("batch_size", 1);
+
         if (filePathsToDelete == null || filePathsToDelete.isEmpty()) {
             return;
         }
@@ -73,21 +77,23 @@ public class DeleteService extends IntentService {
             startForeground(NOTIFICATION_ID, createNotification("Starting deletion...", 0, totalFiles));
         }
 
+        // NEW LOGIC: Process deletions in batches
+        for (int i = 0; i < totalFiles; i += batchSize) {
+            int end = Math.min(i + batchSize, totalFiles);
+            List<String> batchPaths = filePathsToDelete.subList(i, end);
+            List<File> batchFiles = new ArrayList<>();
 
-        for (int i = 0; i < totalFiles; i++) {
-            String path = filePathsToDelete.get(i);
-            File file = new File(path);
-
-            if (StorageUtils.deleteFile(this, file)) {
-                deletedCount++;
-            } else {
-                Log.w(TAG, "Failed to delete file: " + path);
+            for (String path : batchPaths) {
+                batchFiles.add(new File(path));
             }
 
-            // --- UPDATE 3: Check permission again before updating the notification ---
+            // Call the new optimized batch delete method in FileUtils
+            deletedCount += FileUtils.deleteFileBatch(this, batchFiles);
+
+            // Update notification only once per batch to reduce system load
             if (canShowNotification) {
-                String progressText = "Deleting " + (i + 1) + " of " + totalFiles + "...";
-                notificationManager.notify(NOTIFICATION_ID, createNotification(progressText, i + 1, totalFiles));
+                String progressText = "Deleted " + Math.min(i + batchSize, totalFiles) + " of " + totalFiles + "...";
+                notificationManager.notify(NOTIFICATION_ID, createNotification(progressText, Math.min(i + batchSize, totalFiles), totalFiles));
             }
         }
 
