@@ -59,7 +59,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class StorageBrowserActivity extends Activity implements StorageBrowserAdapter.OnItemClickListener, StorageBrowserAdapter.OnHeaderCheckedChangeListener {
+public class StorageBrowserActivity extends Activity implements StorageBrowserAdapter.OnItemClickListener, StorageBrowserAdapter.OnHeaderCheckedChangeListener, StorageBrowserAdapter.OnHeaderClickListener {
 
     private static final String TAG = "StorageBrowserActivity";
 
@@ -77,6 +77,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 
     private StorageBrowserAdapter adapter;
     private List<Object> masterList = new ArrayList<>();
+    private List<Object> displayList = new ArrayList<>(); // NEW: Separate list for expansion logic
     private String currentPath;
     private BroadcastReceiver deleteCompletionReceiver;
     private BroadcastReceiver operationBroadcastReceiver;
@@ -105,15 +106,19 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
     public static class DateHeader {
         private final String dateString;
         private boolean isChecked;
+        private boolean isExpanded; // NEW: Track expansion state
 
         public DateHeader(String dateString) {
             this.dateString = dateString;
             this.isChecked = false;
+            this.isExpanded = true; // Default to expanded
         }
 
         public String getDateString() { return dateString; }
         public boolean isChecked() { return isChecked; }
         public void setChecked(boolean checked) { isChecked = checked; }
+        public boolean isExpanded() { return isExpanded; }
+        public void setExpanded(boolean expanded) { isExpanded = expanded; }
     }
 
 
@@ -171,13 +176,13 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
     }
 
     private void setupRecyclerView() {
-        adapter = new StorageBrowserAdapter(this, new ArrayList<Object>(), this, this);
+        adapter = new StorageBrowserAdapter(this, displayList, this, this, this);
         gridLayoutManager = new GridLayoutManager(this, 3);
         gridLayoutManager.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
 				@Override
 				public int getSpanSize(int position) {
-					if (position >= 0 && position < adapter.getFilteredItems().size()) {
-						if (adapter.getFilteredItems().get(position) instanceof DateHeader) {
+					if (position >= 0 && position < adapter.getItemCount()) {
+						if (displayList.get(position) instanceof DateHeader) {
 							return gridLayoutManager.getSpanCount();
 						}
 					}
@@ -313,14 +318,31 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
         adapter.notifyDataSetChanged();
     }
 
-    private void updateHeaderStateForItem(StorageBrowserAdapter.FileItem item) {
-        int itemIndex = -1;
-        for (int i = 0; i < masterList.size(); i++) {
-            if (masterList.get(i) == item) {
-                itemIndex = i;
-                break;
+    @Override
+    public void onHeaderClick(DateHeader header) {
+        header.setExpanded(!header.isExpanded());
+        rebuildDisplayList();
+    }
+
+    private void rebuildDisplayList() {
+        displayList.clear();
+        boolean isCurrentGroupExpanded = true;
+        for (Object item : masterList) {
+            if (item instanceof DateHeader) {
+                DateHeader header = (DateHeader) item;
+                displayList.add(header);
+                isCurrentGroupExpanded = header.isExpanded();
+            } else {
+                if (isCurrentGroupExpanded) {
+                    displayList.add(item);
+                }
             }
         }
+        adapter.updateMasterList(displayList);
+    }
+
+    private void updateHeaderStateForItem(StorageBrowserAdapter.FileItem item) {
+        int itemIndex = masterList.indexOf(item);
         if (itemIndex == -1) return;
 
         DateHeader parentHeader = null;
@@ -349,7 +371,11 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
             }
         }
         parentHeader.setChecked(allChildrenSelected);
-        adapter.notifyItemChanged(headerIndex);
+        
+        int displayHeaderIndex = displayList.indexOf(parentHeader);
+        if (displayHeaderIndex != -1) {
+            adapter.notifyItemChanged(displayHeaderIndex);
+        }
     }
 
     private void showFileOperationsDialog() {
@@ -445,13 +471,12 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
         recycleButton.setOnClickListener(new View.OnClickListener() {
 				@Override
 				public void onClick(View v) {
-                    // NEW LOGIC: Ask Phone or SD Card (Enhancement 2)
                     AlertDialog.Builder binBuilder = new AlertDialog.Builder(StorageBrowserActivity.this);
                     binBuilder.setTitle("Choose Recycle Bin");
                     binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
                         @Override
-                        public void onClick(DialogInterface dialogInterface, int whichBin) {
-                            new MoveToRecycleTask(selectedFiles, whichBin == 1).execute();
+                        public void onClick(DialogInterface dialogInterface, int which) {
+                            new MoveToRecycleTask(selectedFiles, which == 1).execute();
                         }
                     });
                     binBuilder.show();
@@ -493,7 +518,6 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                             new GatherFilesForHidingTask().execute(folder);
                             break;
 						case 5: // Move to Recycle Bin
-                            // NEW LOGIC (Enhancement 2)
                             AlertDialog.Builder binBuilder = new AlertDialog.Builder(StorageBrowserActivity.this);
                             binBuilder.setTitle("Choose Recycle Bin");
                             binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
@@ -562,7 +586,6 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 
         final AlertDialog dialog = builder.create();
 
-        // Populate basic details
         if (files.size() == 1) {
             File file = files.get(0);
             StringBuilder sb = new StringBuilder();
@@ -702,8 +725,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                     Toast.makeText(StorageBrowserActivity.this, "Folder is empty.", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                // When deleting a whole folder, doing it in one massive batch is safest to avoid weird tree issues
-                performDeletion(allFilePaths, 30); 
+                performDeletion(allFilePaths, 30);
             }
         }.execute();
     }
@@ -763,7 +785,6 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 			.setPositiveButton("Delete All", new DialogInterface.OnClickListener() {
 				@Override
 				public void onClick(DialogInterface dialog, int which) {
-                    // NEW LOGIC: Ask for Batch Size (Enhancement 4)
                     final String[] batchOptions = {"1 (Single)", "5 at a time", "10 at a time", "20 at a time", "30 at a time"};
                     final int[] batchValues = {1, 5, 10, 20, 30};
 
@@ -776,7 +797,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                                 for(File f : filesToDelete) {
                                     pathsToDelete.add(f.getAbsolutePath());
                                 }
-                                performDeletion(pathsToDelete, batchValues[index]); // Pass chosen size
+                                performDeletion(pathsToDelete, batchValues[index]);
                             }
                         }).show();
 				}
@@ -784,7 +805,6 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 			.setNeutralButton("Move to Recycle", new DialogInterface.OnClickListener() {
 				@Override
 				public void onClick(DialogInterface dialog, int which) {
-                    // NEW LOGIC: Ask Phone or SD Card (Enhancement 2)
                     AlertDialog.Builder binBuilder = new AlertDialog.Builder(StorageBrowserActivity.this);
                     binBuilder.setTitle("Choose Recycle Bin");
                     binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
@@ -800,23 +820,14 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 			.show();
     }
 
-    private void moveToRecycleBin(List<File> filesToMove) {
-        // Redundant due to refactoring above, but kept to satisfy interface rules
-    }
-
     private void performDeletion(List<String> filePathsToDelete, int batchSize) {
-        if (filePathsToDelete.isEmpty()) {
-            Toast.makeText(this, "No files to delete.", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
         operationProgressLayout.setVisibility(View.VISIBLE);
         operationProgressBar.setIndeterminate(true);
         operationProgressText.setText("Starting deletion...");
 
         Intent intent = new Intent(this, DeleteService.class);
         intent.putStringArrayListExtra(DeleteService.EXTRA_FILES_TO_DELETE, new ArrayList<String>(filePathsToDelete));
-        intent.putExtra("batch_size", batchSize); // Enhancement 4
+        intent.putExtra("batch_size", batchSize);
         ContextCompat.startForegroundService(this, intent);
     }
 
@@ -864,7 +875,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
         protected void onPostExecute(List<File> result) {
             super.onPostExecute(result);
             sortAndGroupFiles(result);
-            adapter.updateMasterList(masterList);
+            rebuildDisplayList();
             loadingView.setVisibility(View.GONE);
             fileGrid.setVisibility(View.VISIBLE);
         }
@@ -887,7 +898,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 						currentSortOrder = SORT_BY_TYPE;
 					}
 					sortAndGroupFiles(getCurrentFiles());
-					adapter.updateMasterList(masterList);
+					rebuildDisplayList();
 					return true;
 				}
 			});
@@ -1145,7 +1156,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 
     private List<File> getSelectedFiles() {
         List<File> selectedFiles = new ArrayList<>();
-        for (Object item : adapter.getFilteredItems()) {
+        for (Object item : masterList) {
             if (item instanceof StorageBrowserAdapter.FileItem) {
                 StorageBrowserAdapter.FileItem fileItem = (StorageBrowserAdapter.FileItem) item;
                 if (fileItem.isSelected()) {
@@ -1188,7 +1199,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
         serviceIntent.putExtra(FileOperationService.EXTRA_SOURCE_FILES, (Serializable) filesToOperate);
         serviceIntent.putExtra(FileOperationService.EXTRA_DESTINATION_DIR, destination);
         serviceIntent.putExtra(FileOperationService.EXTRA_OPERATION_TYPE, operation);
-        ContextCompat.startForegroundService(this, serviceIntent);
+        ContextCompat.startForegroundService(this, intent);
 
         com.hfm.app.ClipboardManager.getInstance().clear();
         updateFooterUI();
@@ -1323,8 +1334,6 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
         @Override
         protected List<File> doInBackground(Void... voids) {
             List<File> movedFiles = new ArrayList<>();
-            
-            // Standard Phone Recycle Bin Logic
             File recycleBinDir = new File(Environment.getExternalStorageDirectory(), "HFMRecycleBin");
             if (!recycleBinDir.exists() && !useSdCardBin) {
                  if (!recycleBinDir.mkdir()) return new ArrayList<>();
@@ -1339,12 +1348,10 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                 boolean moveSuccess = false;
 
                 if (useSdCardBin && StorageUtils.isFileOnSdCard(context, sourceFile)) {
-                     // NEW LOGIC: Use SD Card SAF move
                      if (StorageUtils.moveFileOnSdCardSafely(context, sourceFile)) {
                          moveSuccess = true;
                      }
                 } else {
-                     // Existing Logic: Move to Phone Bin
                      File destFile = new File(recycleBinDir, sourceFile.getName());
                      if (destFile.exists()) {
                         String name = sourceFile.getName();
@@ -1360,7 +1367,6 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                     if (sourceFile.renameTo(destFile)) {
                         moveSuccess = true;
                     } else {
-                        // Fallback copy-delete logic
                         if (StorageUtils.copyFile(context, sourceFile, destFile)) {
                             if (StorageUtils.deleteFile(context, sourceFile)) {
                                 moveSuccess = true;
@@ -1399,7 +1405,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                     }
                 }
                 masterList.removeAll(itemsToRemove);
-                adapter.updateMasterList(masterList);
+                rebuildDisplayList();
             }
         }
     }
