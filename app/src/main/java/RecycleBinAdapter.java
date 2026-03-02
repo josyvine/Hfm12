@@ -46,6 +46,7 @@ public class RecycleBinAdapter extends RecyclerView.Adapter<RecycleBinAdapter.Vi
         holder.checkBox.setVisibility(View.GONE);
 
         if (file.isDirectory()) {
+            // UPDATED: Modern yellow folder icon
             holder.fileIcon.setImageResource(R.drawable.ic_folder_modern);
         } else {
             holder.fileIcon.setImageResource(getIconForFileType(file.getName()));
