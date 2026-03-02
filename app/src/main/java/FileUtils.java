@@ -11,7 +11,7 @@ import android.util.Log;
 import java.io.File;
 import java.util.List;
 
-public class FileUtils {
+public class FileUtils { 
 
     private static final String TAG = "FileUtils";
 
