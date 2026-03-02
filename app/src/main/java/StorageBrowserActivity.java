@@ -46,7 +46,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.security.SecureRandom;
-import java.text.SimpleDateFormat; // <<< THIS LINE HAS BEEN ADDED
+import java.text.SimpleDateFormat; 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -445,7 +445,16 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
         recycleButton.setOnClickListener(new View.OnClickListener() {
 				@Override
 				public void onClick(View v) {
-					moveToRecycleBin(selectedFiles);
+                    // NEW LOGIC: Ask Phone or SD Card (Enhancement 2)
+                    AlertDialog.Builder binBuilder = new AlertDialog.Builder(StorageBrowserActivity.this);
+                    binBuilder.setTitle("Choose Recycle Bin");
+                    binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialogInterface, int whichBin) {
+                            new MoveToRecycleTask(selectedFiles, whichBin == 1).execute();
+                        }
+                    });
+                    binBuilder.show();
 					dialog.dismiss();
 				}
 			});
@@ -484,7 +493,16 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                             new GatherFilesForHidingTask().execute(folder);
                             break;
 						case 5: // Move to Recycle Bin
-							moveToRecycleBin(folderList);
+                            // NEW LOGIC (Enhancement 2)
+                            AlertDialog.Builder binBuilder = new AlertDialog.Builder(StorageBrowserActivity.this);
+                            binBuilder.setTitle("Choose Recycle Bin");
+                            binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface dialogInterface, int whichBin) {
+                                    new MoveToRecycleTask(folderList, whichBin == 1).execute();
+                                }
+                            });
+                            binBuilder.show();
 							break;
 						case 6: // Delete Permanently
 							initiateFolderDeletionProcess(folder);
@@ -684,7 +702,8 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                     Toast.makeText(StorageBrowserActivity.this, "Folder is empty.", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                performDeletion(allFilePaths);
+                // When deleting a whole folder, doing it in one massive batch is safest to avoid weird tree issues
+                performDeletion(allFilePaths, 30); 
             }
         }.execute();
     }
@@ -744,17 +763,37 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 			.setPositiveButton("Delete All", new DialogInterface.OnClickListener() {
 				@Override
 				public void onClick(DialogInterface dialog, int which) {
-                    ArrayList<String> pathsToDelete = new ArrayList<>();
-                    for(File f : filesToDelete) {
-                        pathsToDelete.add(f.getAbsolutePath());
-                    }
-					performDeletion(pathsToDelete);
+                    // NEW LOGIC: Ask for Batch Size (Enhancement 4)
+                    final String[] batchOptions = {"1 (Single)", "5 at a time", "10 at a time", "20 at a time", "30 at a time"};
+                    final int[] batchValues = {1, 5, 10, 20, 30};
+
+                    new AlertDialog.Builder(StorageBrowserActivity.this)
+                        .setTitle("Select Deletion Speed")
+                        .setItems(batchOptions, new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialogInterface, int index) {
+                                ArrayList<String> pathsToDelete = new ArrayList<>();
+                                for(File f : filesToDelete) {
+                                    pathsToDelete.add(f.getAbsolutePath());
+                                }
+                                performDeletion(pathsToDelete, batchValues[index]); // Pass chosen size
+                            }
+                        }).show();
 				}
 			})
 			.setNeutralButton("Move to Recycle", new DialogInterface.OnClickListener() {
 				@Override
 				public void onClick(DialogInterface dialog, int which) {
-					moveToRecycleBin(filesToDelete);
+                    // NEW LOGIC: Ask Phone or SD Card (Enhancement 2)
+                    AlertDialog.Builder binBuilder = new AlertDialog.Builder(StorageBrowserActivity.this);
+                    binBuilder.setTitle("Choose Recycle Bin");
+                    binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialogInterface, int whichBin) {
+                            new MoveToRecycleTask(filesToDelete, whichBin == 1).execute();
+                        }
+                    });
+                    binBuilder.show();
 				}
 			})
 			.setNegativeButton("Cancel", null)
@@ -762,10 +801,10 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
     }
 
     private void moveToRecycleBin(List<File> filesToMove) {
-        new MoveToRecycleTask(filesToMove).execute();
+        // Redundant due to refactoring above, but kept to satisfy interface rules
     }
 
-    private void performDeletion(List<String> filePathsToDelete) {
+    private void performDeletion(List<String> filePathsToDelete, int batchSize) {
         if (filePathsToDelete.isEmpty()) {
             Toast.makeText(this, "No files to delete.", Toast.LENGTH_SHORT).show();
             return;
@@ -777,6 +816,7 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 
         Intent intent = new Intent(this, DeleteService.class);
         intent.putStringArrayListExtra(DeleteService.EXTRA_FILES_TO_DELETE, new ArrayList<String>(filePathsToDelete));
+        intent.putExtra("batch_size", batchSize); // Enhancement 4
         ContextCompat.startForegroundService(this, intent);
     }
 
@@ -1262,10 +1302,12 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
         private AlertDialog progressDialog;
         private List<File> filesToMove;
         private Context context;
+        private boolean useSdCardBin;
 
-        public MoveToRecycleTask(List<File> filesToMove) {
+        public MoveToRecycleTask(List<File> filesToMove, boolean useSdCardBin) {
             this.filesToMove = filesToMove;
             this.context = StorageBrowserActivity.this;
+            this.useSdCardBin = useSdCardBin;
         }
 
         @Override
@@ -1280,21 +1322,31 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
 
         @Override
         protected List<File> doInBackground(Void... voids) {
+            List<File> movedFiles = new ArrayList<>();
+            
+            // Standard Phone Recycle Bin Logic
             File recycleBinDir = new File(Environment.getExternalStorageDirectory(), "HFMRecycleBin");
-            if (!recycleBinDir.exists()) {
-                if (!recycleBinDir.mkdir()) {
-                    return new ArrayList<>();
-                }
+            if (!recycleBinDir.exists() && !useSdCardBin) {
+                 if (!recycleBinDir.mkdir()) return new ArrayList<>();
             }
 
-            List<File> movedFiles = new ArrayList<>();
             for (int i = 0; i < filesToMove.size(); i++) {
                 File sourceFile = filesToMove.get(i);
                 publishProgress("Moving: " + sourceFile.getName());
 
-                if (sourceFile.exists()) {
-                    File destFile = new File(recycleBinDir, sourceFile.getName());
-                    if (destFile.exists()) {
+                if (!sourceFile.exists()) continue;
+
+                boolean moveSuccess = false;
+
+                if (useSdCardBin && StorageUtils.isFileOnSdCard(context, sourceFile)) {
+                     // NEW LOGIC: Use SD Card SAF move
+                     if (StorageUtils.moveFileOnSdCardSafely(context, sourceFile)) {
+                         moveSuccess = true;
+                     }
+                } else {
+                     // Existing Logic: Move to Phone Bin
+                     File destFile = new File(recycleBinDir, sourceFile.getName());
+                     if (destFile.exists()) {
                         String name = sourceFile.getName();
                         String extension = "";
                         int dotIndex = name.lastIndexOf(".");
@@ -1304,40 +1356,25 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                         }
                         destFile = new File(recycleBinDir, name + "_" + System.currentTimeMillis() + extension);
                     }
-
-                    boolean moveSuccess = false;
-
-                    // First, try a simple rename. This is fast and will work for same-volume moves.
+                    
                     if (sourceFile.renameTo(destFile)) {
                         moveSuccess = true;
                     } else {
-                        // If rename fails, it's likely a cross-volume move. Fall back to copy-then-delete.
-                        Log.w(TAG, "renameTo failed for " + sourceFile.getAbsolutePath() + ". Falling back to copy-delete.");
+                        // Fallback copy-delete logic
                         if (StorageUtils.copyFile(context, sourceFile, destFile)) {
-                            // Copy was successful, now delete the original.
                             if (StorageUtils.deleteFile(context, sourceFile)) {
                                 moveSuccess = true;
                             } else {
-                                // CRITICAL: If the original can't be deleted, we must delete the copy
-                                // to avoid duplicating the file.
-                                Log.e(TAG, "Failed to delete original file " + sourceFile.getAbsolutePath() + " after copy. Deleting copied file to prevent duplication.");
-                                destFile.delete();
-                                moveSuccess = false;
+                                destFile.delete(); 
                             }
-                        } else {
-                            // The copy operation failed.
-                            Log.e(TAG, "Copy-delete fallback failed to copy file: " + sourceFile.getAbsolutePath());
-                            moveSuccess = false;
-                        }
+                        } 
                     }
+                    if(moveSuccess) sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(destFile)));
+                }
 
-                    if (moveSuccess) {
-                        movedFiles.add(sourceFile);
-                        scanFile(sourceFile);
-                        scanFile(destFile);
-                    } else {
-                        Log.w(TAG, "Failed to move file to recycle bin: " + sourceFile.getAbsolutePath());
-                    }
+                if (moveSuccess) {
+                    movedFiles.add(sourceFile);
+                    sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(sourceFile)));
                 }
             }
             return movedFiles;
@@ -1352,7 +1389,6 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                 Toast.makeText(context, movedFiles.size() + " item(s) moved to Recycle Bin.", Toast.LENGTH_LONG).show();
             }
 
-            // Instant UI refresh
             if (!movedFiles.isEmpty()) {
                 List<Object> itemsToRemove = new ArrayList<>();
                 for (Object item : masterList) {
@@ -1363,16 +1399,8 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                     }
                 }
                 masterList.removeAll(itemsToRemove);
-                // This is a simplified refresh, a more complex one could remove empty date headers
                 adapter.updateMasterList(masterList);
             }
-        }
-
-        private void scanFile(File file) {
-            Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-            Uri contentUri = Uri.fromFile(file);
-            mediaScanIntent.setData(contentUri);
-            context.sendBroadcast(mediaScanIntent);
         }
     }
 }
