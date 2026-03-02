@@ -24,8 +24,8 @@ public class StorageUtils {
     private static final String KEY_SDCARD_URI = "sdcard_uri";
     public static final int REQUEST_CODE_SDCARD_PERMISSION = 101;
     
-    // NEW CONSTANT FOR SD CARD RECYCLE BIN
-    public static final String SD_RECYCLE_BIN_NAME = ".HFMRecycleBin";
+    // UPDATED: Removed the dot so the folder is visible on the SD Card
+    public static final String SD_RECYCLE_BIN_NAME = "HFMRecycleBin";
 
     public static void saveSdCardUri(Context context, Uri uri) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -209,6 +209,7 @@ public class StorageUtils {
         return result;
     }
 
+
     public static OutputStream getOutputStream(Context context, File targetFile) throws IOException {
         if (!isFileOnSdCard(context, targetFile)) {
             // Ensure parent directory exists for internal storage writes
@@ -290,8 +291,6 @@ public class StorageUtils {
         }
     }
 
-    // --- NEW METHODS FOR ENHANCEMENT 2 (DUAL RECYCLE BIN) ---
-    
     public static DocumentFile getOrCreateSdCardRecycleBin(Context context) {
         Uri sdCardUri = getSdCardUri(context);
         if (sdCardUri == null) {
