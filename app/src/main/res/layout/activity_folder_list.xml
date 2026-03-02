@@ -36,14 +36,15 @@
             android:textStyle="bold" />
     </RelativeLayout>
 
-    <!-- List of Folders -->
-    <ListView
+    <!-- List of Folders (Changed from ListView to RecyclerView for Enhancement 1) -->
+    <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/folder_list_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_below="@id/top_bar_folder_list"
-        android:divider="@android:color/darker_gray"
-        android:dividerHeight="1px"/>
+        android:clipToPadding="false"
+        android:paddingBottom="16dp"
+        android:scrollbars="vertical" />
 
     <!-- Empty View for when no folders are found -->
     <TextView
@@ -57,4 +58,3 @@
         android:visibility="gone"/>
 
 </RelativeLayout>
-
