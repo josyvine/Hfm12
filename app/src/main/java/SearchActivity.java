@@ -83,6 +83,7 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
     private SearchAdapter adapter;
     private GridLayoutManager gridLayoutManager;
     
+    // Logic for Expansion/Collapse
     private List<Object> masterList = new ArrayList<>();
     private List<Object> displayList = new ArrayList<>();
     
@@ -115,12 +116,12 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
     public static class DateHeader {
         private final String dateString;
         private boolean isChecked;
-        private boolean isExpanded;
+        private boolean isExpanded; // NEW Logic Support
 
         public DateHeader(String dateString) {
             this.dateString = dateString;
             this.isChecked = false;
-            this.isExpanded = true;
+            this.isExpanded = true; 
         }
 
         public String getDateString() { return dateString; }
@@ -818,7 +819,7 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
 			.setPositiveButton("Delete All", new DialogInterface.OnClickListener() {
 				@Override
 				public void onClick(DialogInterface dialog, int which) {
-					// UPDATED: Enhancement 4 - Batch Deletion selection
+					// Enhancement 4 Logic: Batch size selection
                     final String[] batchOptions = {"1 (Single)", "5 at a time", "10 at a time", "20 at a time", "30 at a time"};
                     final int[] batchValues = {1, 5, 10, 20, 30};
 
@@ -835,7 +836,7 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
             .setNeutralButton("Move to Recycle", new DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
-                    // UPDATED: Enhancement 2 - Phone or SD Card selection
+                    // Enhancement 2 Logic: Recycle choice
                     AlertDialog.Builder binBuilder = new AlertDialog.Builder(SearchActivity.this);
                     binBuilder.setTitle("Choose Recycle Bin");
                     binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
@@ -941,7 +942,7 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
     private void promptForSdCardPermission() {
         new AlertDialog.Builder(this)
             .setTitle("SD Card Permission Needed")
-            .setMessage("To delete files on your external SD card, you must grant this app access. Please tap 'Grant', then select the root of your SD card and tap 'Allow'.")
+            .setMessage("To delete files on your external SD card, you must grant this app access. Please tap 'Grant', then select the root of your SD card (e.g., 'Galaxy SD Card') on the next screen and tap 'Allow'.")
             .setPositiveButton("Grant", new DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
@@ -1103,7 +1104,7 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
         deleteCompletionReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-                // FIXED: Use correct extra key for count
+                // FIXED Logic: Read count extra
                 int deletedCount = intent.getIntExtra(DeleteService.EXTRA_DELETED_COUNT, 0);
                 Toast.makeText(SearchActivity.this, "Deletion complete. " + deletedCount + " files removed.", Toast.LENGTH_LONG).show();
 
@@ -1228,12 +1229,12 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
                     binBuilder.setTitle("Choose Recycle Bin");
                     binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
                         @Override
-                        public void onClick(DialogInterface dialogInterface, int whichBin) {
-                            moveToRecycleBin(selectedResults, whichBin == 1);
+                        public void onClick(DialogInterface dialogInterface, int which) {
+                            moveToRecycleBin(selectedResults, which == 1);
                         }
                     });
                     binBuilder.show();
-                    dialog.dismiss();
+					dialog.dismiss();
 				}
 			});
 
@@ -1313,6 +1314,17 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
 			});
 
         dialog.show();
+    }
+
+    private File getFileFromResult(SearchResult result) {
+        if ("file".equals(result.getUri().getScheme())) {
+            return new File(result.getUri().getPath());
+        }
+        String path = result.getPath();
+        if (path != null) {
+            return new File(path);
+        }
+        return null;
     }
     
     private void showSendToDropDialog(final File fileToSend) {
@@ -1405,7 +1417,9 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
         protected List<SearchResult> doInBackground(Void... voids) {
             File recycleBinDir = new File(Environment.getExternalStorageDirectory(), "HFMRecycleBin");
             if (!recycleBinDir.exists() && !useSdCardBin) {
-                if (!recycleBinDir.mkdir()) return new ArrayList<>();
+                if (!recycleBinDir.mkdir()) {
+                    return new ArrayList<>();
+                }
             }
 
             List<SearchResult> movedResults = new ArrayList<>();
@@ -1468,6 +1482,30 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
             if (!movedResults.isEmpty()) {
                 masterList.removeAll(movedResults);
                 rebuildDisplayList();
+            }
+        }
+
+        private boolean copyFile(File source, File destination) {
+            InputStream in = null;
+            OutputStream out = null;
+            try {
+                in = new FileInputStream(source);
+                out = new FileOutputStream(destination);
+                byte[] buf = new byte[8192];
+                int len;
+                while ((len = in.read(buf)) > 0) {
+                    out.write(buf, 0, len);
+                }
+                return true;
+            } catch (IOException e) {
+                return StorageUtils.copyFile(context, source, destination);
+            } finally {
+                try {
+                    if (in != null) in.close();
+                    if (out != null) out.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
             }
         }
     }
