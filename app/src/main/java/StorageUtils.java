@@ -272,7 +272,8 @@ public class StorageUtils {
                 return false;
             }
 
-            byte[] buf = new byte[8192];
+            // UPDATE: Buffer significantly increased to speed up physical device-to-SD writes
+            byte[] buf = new byte[131072]; // 128KB chunk reads (increased from 8192)
             int len;
             while ((len = in.read(buf)) > 0) {
                 out.write(buf, 0, len);
@@ -309,11 +310,11 @@ public class StorageUtils {
         return recycleBin;
     }
 
-    public static boolean moveFileOnSdCardSafely(Context context, File sourceFile) {
+    // UPDATE: Overloaded method to accept the cached Recycle Bin DocumentFile to stop SAF lookup loop lag
+    public static boolean moveFileOnSdCardSafely(Context context, File sourceFile, DocumentFile recycleBinDoc) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
                 DocumentFile sourceDoc = getDocumentFile(context, sourceFile, false);
-                DocumentFile recycleBinDoc = getOrCreateSdCardRecycleBin(context);
                 
                 if (sourceDoc != null && recycleBinDoc != null) {
                     Uri movedUri = DocumentsContract.moveDocument(context.getContentResolver(), 
@@ -325,5 +326,10 @@ public class StorageUtils {
             }
         }
         return false;
+    }
+
+    // Maintained for backward compatibility for any other parts of the app using it without caching
+    public static boolean moveFileOnSdCardSafely(Context context, File sourceFile) {
+        return moveFileOnSdCardSafely(context, sourceFile, getOrCreateSdCardRecycleBin(context));
     }
 }
