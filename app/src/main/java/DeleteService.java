@@ -87,7 +87,8 @@ public class DeleteService extends IntentService {
             }
 
             // UPDATE 3: Call optimized bulk delete and accurately sum the results
-            // Because Android 11+ permission is handled in the Activity now, this runs unhindered.
+            // This relies on FileUtils to return the max(db_delete, physical_delete) count
+            // Since permissions are now handled in the Activity for Android 11+, this runs reliably.
             deletedCount += FileUtils.deleteFileBatch(this, batchFiles);
 
             // --- UPDATE 4: Check permission again before updating the notification ---
