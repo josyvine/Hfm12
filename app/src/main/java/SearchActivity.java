@@ -1495,6 +1495,10 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
         return siblingFiles;
     }
 
+    private void moveToRecycleBin(List<SearchResult> resultsToMove, boolean useSdCardBin) {
+        new MoveToRecycleTask(resultsToMove, useSdCardBin).execute();
+    }
+
     private class MoveToRecycleTask extends AsyncTask<Void, Void, List<SearchResult>> {
         private AlertDialog progressDialog;
         private List<SearchResult> resultsToMove;
@@ -1619,5 +1623,24 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
             }
             return true;
         }
+    }
+
+    private int getFileCategory(String fileName) {
+        String extension = "";
+        int i = fileName.lastIndexOf('.');
+        if (i > 0) {
+            extension = fileName.substring(i + 1).toLowerCase(Locale.ROOT);
+        }
+
+        List<String> imageExtensions = Arrays.asList("jpg", "jpeg", "png", "gif", "bmp", "webp");
+        List<String> videoExtensions = Arrays.asList("mp4", "3gp", "mkv", "webm", "avi");
+        List<String> audioExtensions = Arrays.asList("mp3", "wav", "ogg", "m4a", "aac", "flac");
+        List<String> docExtensions = Arrays.asList("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "csv", "json", "xml", "html", "js", "css", "java", "kt", "py", "c", "cpp", "h", "cs", "php", "rb", "go", "swift", "sh", "bat", "ps1", "ini", "cfg", "conf", "md", "prop", "gradle", "pro", "sql");
+
+        if (imageExtensions.contains(extension)) return CATEGORY_IMAGES;
+        if (videoExtensions.contains(extension)) return CATEGORY_VIDEOS;
+        if (audioExtensions.contains(extension)) return CATEGORY_AUDIO;
+        if (docExtensions.contains(extension)) return CATEGORY_DOCS;
+        return CATEGORY_OTHER;
     }
 }
