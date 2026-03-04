@@ -111,7 +111,6 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
     private List<SearchResult> mResultsPendingPermission;
     private Runnable mPendingOperation;
     
-    // Variables for Android 11+ Bulk Delete Permission Flow
     private ArrayList<String> mPendingFilePathsToDelete;
     private int mPendingBatchSize;
 
@@ -644,10 +643,10 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
                 }
 
                 Pattern p3_gen = Pattern.compile("^(\\d+)\\s+days$");
-                Matcher m3_gen = p3_gen.matcher(q_lower);
-                if (m3_gen.find()) {
+                Matcher p3_gen_matcher = p3_gen.matcher(q_lower);
+                if (p3_gen_matcher.find()) {
                     try {
-                        int days = Integer.parseInt(m3_gen.group(1));
+                        int days = Integer.parseInt(p3_gen_matcher.group(1));
                         if (days > 0) {
                             params.setDateRange(getStartOfDaysAgo(days - 1), getEndOfToday());
                         }
@@ -787,58 +786,94 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
     }
 
     private void initiateDeletionProcess() {
-        final List<SearchResult> selectedResults = new ArrayList<>();
-        for (Object item : masterList) {
-            if (item instanceof SearchResult) {
-                SearchResult result = (SearchResult) item;
-                if (!result.isExcluded()) {
-                    selectedResults.add(result);
+        // UPDATE: Fix Crash by moving heavy file pre-check to background task
+        new PreDeletionCheckTask().execute();
+    }
+
+    private class PreDeletionCheckTask extends AsyncTask<Void, Void, PreDeletionResults> {
+        private AlertDialog progressDialog;
+
+        @Override
+        protected void onPreExecute() {
+            progressDialog = new AlertDialog.Builder(SearchActivity.this)
+                    .setMessage("Processing related files...")
+                    .setCancelable(false)
+                    .create();
+            progressDialog.show();
+        }
+
+        @Override
+        protected PreDeletionResults doInBackground(Void... voids) {
+            List<SearchResult> selectedResults = new ArrayList<>();
+            boolean requiresSdCardPermission = false;
+            
+            // Loop masterList once to gather selection
+            for (Object item : masterList) {
+                if (item instanceof SearchResult) {
+                    SearchResult result = (SearchResult) item;
+                    if (!result.isExcluded()) {
+                        selectedResults.add(result);
+                        
+                        // Check SD Card path (Uses optimized cached version in StorageUtils if updated)
+                        if (result.getPath() != null) {
+                            File file = new File(result.getPath());
+                            if (StorageUtils.isFileOnSdCard(SearchActivity.this, file) && !StorageUtils.hasSdCardPermission(SearchActivity.this)) {
+                                requiresSdCardPermission = true;
+                            }
+                        }
+                    }
                 }
             }
-        }
 
-        if (selectedResults.isEmpty()) {
-            Toast.makeText(this, "No files selected.", Toast.LENGTH_SHORT).show();
-            return;
-        }
+            if (selectedResults.isEmpty()) return null;
 
-        boolean requiresSdCardPermission = false;
-        for (SearchResult result : selectedResults) {
-            if (result.getPath() != null) {
-                File file = new File(result.getPath());
-                if (StorageUtils.isFileOnSdCard(this, file) && !StorageUtils.hasSdCardPermission(this)) {
-                    requiresSdCardPermission = true;
-                    break;
-                }
+            // Build masterDeleteSet (Sibling check) in background to prevent O(N^2) crash
+            Set<SearchResult> masterDeleteSet = new HashSet<>();
+            for (SearchResult selectedResult : selectedResults) {
+                masterDeleteSet.addAll(findSiblingFiles(selectedResult));
             }
+
+            return new PreDeletionResults(selectedResults, new ArrayList<>(masterDeleteSet), requiresSdCardPermission);
         }
 
-        if (requiresSdCardPermission) {
-            mResultsPendingPermission = selectedResults;
-            mPendingOperation = new Runnable() {
-                @Override
-                public void run() {
-                    confirmAndDelete(selectedResults);
-                }
-            };
-            promptForSdCardPermission();
-        } else {
-            confirmAndDelete(selectedResults);
+        @Override
+        protected void onPostExecute(PreDeletionResults results) {
+            if (progressDialog != null && progressDialog.isShowing()) progressDialog.dismiss();
+
+            if (results == null) {
+                Toast.makeText(SearchActivity.this, "No files selected.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            if (results.requiresSdCardPermission) {
+                mResultsPendingPermission = results.processedDeleteList;
+                mPendingOperation = () -> confirmAndDelete(results.processedDeleteList, results.selectedCount);
+                promptForSdCardPermission();
+            } else {
+                confirmAndDelete(results.processedDeleteList, results.selectedCount);
+            }
         }
     }
 
-    private void confirmAndDelete(final List<SearchResult> filesToConfirm) {
-        final Set<SearchResult> masterDeleteSet = new HashSet<>();
-        for (SearchResult selectedResult : filesToConfirm) {
-            masterDeleteSet.addAll(findSiblingFiles(selectedResult));
+    private static class PreDeletionResults {
+        List<SearchResult> selectedResults;
+        List<SearchResult> processedDeleteList;
+        boolean requiresSdCardPermission;
+        int selectedCount;
+
+        PreDeletionResults(List<SearchResult> selectedResults, List<SearchResult> processedDeleteList, boolean requiresSdCardPermission) {
+            this.selectedResults = selectedResults;
+            this.processedDeleteList = processedDeleteList;
+            this.requiresSdCardPermission = requiresSdCardPermission;
+            this.selectedCount = selectedResults.size();
         }
+    }
 
-        final List<SearchResult> toDelete = new ArrayList<>(masterDeleteSet);
+    private void confirmAndDelete(final List<SearchResult> toDelete, int originalSelectedCount) {
         String dialogMessage;
-
-        if (toDelete.size() > filesToConfirm.size()) {
-            int siblingCount = toDelete.size() - filesToConfirm.size();
-            dialogMessage = "You selected <b>" + filesToConfirm.size() + "</b> file(s), but we found <b>" + siblingCount
+        if (toDelete.size() > originalSelectedCount) {
+            int siblingCount = toDelete.size() - originalSelectedCount;
+            dialogMessage = "You selected <b>" + originalSelectedCount + "</b> file(s), but we found <b>" + siblingCount
                 + "</b> other related version(s).<br/><br/>Choose an action for all <b>"
                 + toDelete.size() + "</b> related files.";
         } else {
@@ -946,7 +981,7 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
 
     private void performDelete(final List<SearchResult> toDelete, int batchSize) {
         ArrayList<String> filePathsToDelete = new ArrayList<>();
-        ArrayList<Uri> urisToDelete = new ArrayList<>(); // Android 11+ Requirement
+        ArrayList<Uri> urisToDelete = new ArrayList<>(); 
         
         for (SearchResult result : toDelete) {
             if (result.getPath() != null) {
@@ -960,14 +995,13 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
             return;
         }
 
-        // UPDATE: Android 11+ Scoped Storage Bulk Delete Request 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 android.app.PendingIntent pendingIntent = MediaStore.createDeleteRequest(getContentResolver(), urisToDelete);
                 mPendingFilePathsToDelete = filePathsToDelete;
                 mPendingBatchSize = batchSize;
                 startIntentSenderForResult(pendingIntent.getIntentSender(), 1001, null, 0, 0, 0);
-                return; // Execution pauses here and waits for user's permission popup response
+                return;
             } catch (Exception e) {
                 Log.e(TAG, "Failed to create OS native delete request, falling back", e);
             }
@@ -1005,7 +1039,6 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        // UPDATE: Handle Android 11+ Bulk Delete Permission Response
         if (requestCode == 1001) { 
             if (resultCode == Activity.RESULT_OK && mPendingFilePathsToDelete != null) {
                 startDeleteService(mPendingFilePathsToDelete, mPendingBatchSize);
@@ -1029,7 +1062,7 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
                     if (mPendingOperation != null) {
                         mPendingOperation.run();
                     } else if (mResultsPendingPermission != null && !mResultsPendingPermission.isEmpty()) {
-                        confirmAndDelete(mResultsPendingPermission);
+                        confirmAndDelete(mResultsPendingPermission, mResultsPendingPermission.size());
                     }
                 }
             } else {
@@ -1167,7 +1200,6 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
 
                 deletionProgressLayout.setVisibility(View.GONE);
                 
-                // UPDATE: Optimistic UI refresh prevents "Zero Files Removed" visual glitch
                 List<Object> toRemove = new ArrayList<>();
                 for (Object item : masterList) {
                     if (item instanceof SearchResult && !((SearchResult) item).isExcluded()) {
@@ -1298,8 +1330,8 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
                     binBuilder.setTitle("Choose Recycle Bin");
                     binBuilder.setItems(new CharSequence[]{"Phone Recycle Bin", "SD Card Recycle Bin"}, new DialogInterface.OnClickListener() {
                         @Override
-                        public void onClick(DialogInterface dialogInterface, int whichBin) {
-                            moveToRecycleBin(selectedResults, whichBin == 1);
+                        public void onClick(DialogInterface dialogInterface, int which) {
+                            moveToRecycleBin(selectedResults, which == 1);
                         }
                     });
                     binBuilder.show();
@@ -1565,7 +1597,6 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
                 if (!recycleBinDir.mkdir()) return new ArrayList<>();
             }
 
-            // UPDATE: Cache SD Card Recycle Bin once to prevent extreme SAF loop lag
             androidx.documentfile.provider.DocumentFile cachedSdRecycleBin = null;
             if (useSdCardBin) {
                 cachedSdRecycleBin = StorageUtils.getOrCreateSdCardRecycleBin(context);
@@ -1580,7 +1611,6 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
                     boolean moveSuccess = false;
                     
                     if (useSdCardBin && StorageUtils.isFileOnSdCard(context, sourceFile)) {
-                         // UPDATE: Pass cached SAF DocumentFile so it doesn't do a full root lookup per file
                          if (cachedSdRecycleBin != null && StorageUtils.moveFileOnSdCardSafely(context, sourceFile, cachedSdRecycleBin)) {
                              moveSuccess = true;
                          }
@@ -1600,7 +1630,6 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
                         if (sourceFile.renameTo(destFile)) {
                             moveSuccess = true;
                         } else {
-                            // UPDATE: Prevent copying byte-by-byte if both are on the SD Card and renaming failed
                             boolean isSourceOnSd = StorageUtils.isFileOnSdCard(context, sourceFile);
                             boolean isDestOnSd = StorageUtils.isFileOnSdCard(context, destFile);
                             
@@ -1620,7 +1649,6 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
                     }
                     if (moveSuccess) {
                         movedResults.add(result);
-                        // UPDATE: Removed context.sendBroadcast(ACTION_MEDIA_SCANNER_SCAN_FILE) to prevent intent spam
                     }
                 }
             }
@@ -1641,14 +1669,13 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
             }
         }
 
-        // UPDATE: Buffer significantly increased to speed up physical device-to-SD writes
         private boolean copyFile(File source, File destination) {
             InputStream in = null;
             OutputStream out = null;
             try {
                 in = new FileInputStream(source);
                 out = new FileOutputStream(destination);
-                byte[] buf = new byte[131072]; // 128KB chunk reads (increased from 8192)
+                byte[] buf = new byte[131072]; 
                 int len;
                 while ((len = in.read(buf)) > 0) {
                     out.write(buf, 0, len);
